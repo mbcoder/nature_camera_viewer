@@ -96,7 +96,7 @@ public class NatureCameraViewerApp extends Application {
   private final ObservableList<ImageRecord> imagesList = FXCollections.observableArrayList();
 
   // The date string is used to sort the list, so if the formatting is modified might need to change sorting
-  private static final SimpleDateFormat imageDateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss");
+  private static final SimpleDateFormat imageDateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss.sss");
 
   private final BooleanProperty listIsLoading = new SimpleBooleanProperty();
 
@@ -142,7 +142,7 @@ public class NatureCameraViewerApp extends Application {
     map = new ArcGISMap(BasemapStyle.ARCGIS_STREETS);
     map.getOperationalLayers().add(featureLayer);
     featureLayer.loadAsync();
-    featureLayer.addDoneLoadingListener(() -> mapView.setViewpoint(new Viewpoint(featureLayer.getFullExtent())));
+    featureLayer.addDoneLoadingListener(() -> mapView.setViewpoint(new Viewpoint(featureLayer.getFullExtent().getCenter(), 10000)));
     mapView.setMap(map);
     map.loadAsync();
 
