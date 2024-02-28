@@ -35,6 +35,7 @@ import com.esri.arcgisruntime.ArcGISRuntimeEnvironment;
 import com.esri.arcgisruntime.concurrent.ListenableFuture;
 import com.esri.arcgisruntime.data.ArcGISFeature;
 
+import com.esri.arcgisruntime.data.Feature;
 import com.esri.arcgisruntime.data.FeatureQueryResult;
 import com.esri.arcgisruntime.data.QueryParameters;
 import com.esri.arcgisruntime.data.ServiceFeatureTable;
@@ -57,7 +58,6 @@ import javafx.collections.ObservableList;
 import javafx.collections.transformation.SortedList;
 import javafx.geometry.Point2D;
 import javafx.scene.Scene;
-import javafx.scene.control.Alert;
 import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
@@ -371,14 +371,12 @@ public class NatureCameraViewerApp extends Application {
       var r = imageFeatureTable.queryFeaturesAsync(queryParameters);
       try {
         FeatureQueryResult res = r.get(20, TimeUnit.SECONDS);
-        var it = res.iterator();
-        while (it.hasNext()) {
-          var rr = it.next();
+        for (Feature feature : res) {
           if (stopListing.get()) {
             listIsLoading.set(false);
             return null;
           }
-          ArcGISFeature f = (ArcGISFeature) rr;
+          ArcGISFeature f = (ArcGISFeature) feature;
           try {
             var attachmentList = f.fetchAttachmentsAsync().get();
             if (!attachmentList.isEmpty()) {
