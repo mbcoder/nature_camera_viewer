@@ -1,12 +1,12 @@
 /**
  * Copyright 2024 Esri
- *
+ * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
  * use this file except in compliance with the License. You may obtain a copy
  * of the License at
- *
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
@@ -39,53 +39,66 @@ import com.esri.arcgisruntime.mapping.view.IdentifyLayerResult;
 import com.esri.arcgisruntime.mapping.view.MapView;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleIntegerProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.collections.transformation.SortedList;
 import javafx.geometry.Point2D;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
-import javafx.scene.control.TextArea;
+import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextField;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.MouseButton;
-import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.Text;
+import javafx.scene.text.TextAlignment;
+import javafx.scene.text.TextFlow;
 import javafx.stage.Stage;
 import javafx.util.Callback;
 
+/**
+ * A simple app to display images captured by a nature camera app and stored as attachments to features.
+ * <p>
+ * Example capturing app is in <a href="https://github.com/mbcoder/nature-camera/tree/nature-camera">nature-camera</a>.
+ */
 public class NatureCameraViewerApp extends Application {
 
   record  ImageRecord (String dateString, Image imageData) {}
 
-  private String natureCameraId = null;
   private static final String serviceTableURL = "https://services1.arcgis.com/6677msI40mnLuuLr/ArcGIS/rest/services/NatureCamera/FeatureServer/0";
   private static final String imageTableURL = "https://services1.arcgis.com/6677msI40mnLuuLr/ArcGIS/rest/services/NatureCamera/FeatureServer/1";
   private ServiceFeatureTable cameraLocationFeatureTable;
+  private ServiceFeatureTable imageFeatureTable;
 
   private MapView mapView;
-
   private ArcGISMap map;
+  private final TextFlow textArea = new TextFlow();
+  private final Text noCamera = new Text("No camera selected");
 
-  private final TextArea textArea = new TextArea();
   private final TextField imageCountText = new TextField();
-
   private final ExecutorService executorService = Executors.newSingleThreadExecutor();
-
   private final AtomicBoolean shutdownNow = new AtomicBoolean();
   private final AtomicBoolean stopListing = new AtomicBoolean();
   private final IntegerProperty imageCount =new SimpleIntegerProperty();
-
   private ListenableFuture<IdentifyLayerResult> identifyGraphics;
+  private static final ListView<ImageRecord> imageListView = new ListView<>();
+  private final ObservableList<ImageRecord> imagesList = FXCollections.observableArrayList();
 
-  private ServiceFeatureTable imageFeatureTable;
+  // The date string is used to sort the list, so if the formatting is modified might need to change sorting
+  private static final SimpleDateFormat imageDateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss");
 
-  private final ListView<ImageRecord> imageListView = new ListView<>();
-
-  private static final SimpleDateFormat imageDateFormat = new SimpleDateFormat("yyyy-MMM-dd hh:mm:ss");
+  private final BooleanProperty listIsLoading = new SimpleBooleanProperty();
 
 
   /**
@@ -109,26 +122,24 @@ public class NatureCameraViewerApp extends Application {
 
     ArcGISRuntimeEnvironment.setApiKey("AAPK2967d54657e342d398c129c8581b516686jXNGXVc6CFPZVRVIFV6YbjpO_fn7fz4S2ECOR2nkZkZXxyfl51Iy8AS6h3qcXV");
 
-
     // set the title and size of the stage and show it
-    stage.setTitle("Nature camera app");
+    stage.setTitle("Nature camera image viewer");
     stage.setWidth(800);
     stage.setHeight(600);
     stage.show();
 
-
-
-    // connect to cameraLocationFeatureTable we will be recording imageListView into
+    // connect to cameraLocationFeatureTable we will be using to get a list of available cameras
     cameraLocationFeatureTable = new ServiceFeatureTable(serviceTableURL);
     cameraLocationFeatureTable.loadAsync();
 
+    // connect to imageFeatureTable we will be using to get a list of available image attachments for selected camera
+    imageFeatureTable = new ServiceFeatureTable(imageTableURL);
+    imageFeatureTable.loadAsync();
 
     FeatureLayer featureLayer = new FeatureLayer(cameraLocationFeatureTable);
     mapView = new MapView();
 
     map = new ArcGISMap(BasemapStyle.ARCGIS_STREETS);
-
-
     map.getOperationalLayers().add(featureLayer);
     featureLayer.loadAsync();
     featureLayer.addDoneLoadingListener(() -> mapView.setViewpoint(new Viewpoint(featureLayer.getFullExtent())));
@@ -137,21 +148,41 @@ public class NatureCameraViewerApp extends Application {
 
 
 
-    // create a JavaFX scene with a stack pane as the root node and add it to the scene
-    BorderPane borderPane = new BorderPane();
-    borderPane.setCenter(mapView);
-    mapView.minWidth(300);
-    VBox vbox = new VBox();
+    SortedList<ImageRecord> sortedList = new SortedList<>(imagesList, (o1, o2) -> {
+      if (o1 == null && o2 == null) {
+        return 0;
+      } else if (o1 == null) {
+        return -1;
+      } else if (o2 == null) {
+        return 1;
+      } else if (o1.dateString.equals(o2.dateString)) {
+        return o1.imageData.hashCode() - o2.imageData.hashCode();
+      }
+      return o1.dateString.compareTo(o2.dateString);
+    });
+
+    imageListView.setItems(sortedList);
 
     imageListView.setCellFactory(new ImageCellFactory());
 
-    imageCountText.textProperty().bind(imageCount.asString());
+    imageCountText.textProperty().bind(
+        Bindings.concat("Image count: ",
+            imageCount.asString(),
+            Bindings.when(listIsLoading).then("   (List is loading)").otherwise("")));
 
-    vbox.getChildren().addAll(textArea, imageCountText, imageListView);
-    textArea.setText("No camera selected");
+    VBox rightHandBox = new VBox();
+    rightHandBox.getChildren().addAll(textArea, imageCountText, imageListView);
+    // Want the list view to always fill remaining space
+    VBox.setVgrow(imageListView, Priority.ALWAYS);
+
+    noCamera.setFont(new Font(20));
+    textArea.getChildren().add(noCamera);
+    textArea.setPrefHeight(75);
     imageCount.set(0);
-    borderPane.setRight(vbox);
-    Scene scene = new Scene(borderPane);
+
+    SplitPane splitPane = new SplitPane();
+    splitPane.getItems().addAll(mapView, rightHandBox);
+    Scene scene = new Scene(splitPane);
     stage.setScene(scene);
 
     mapView.setOnMouseClicked(e -> {
@@ -166,22 +197,29 @@ public class NatureCameraViewerApp extends Application {
         {
           try {
             var res = identifyGraphics.get();
-            System.out.println("Found " + res.getElements().size());
-            natureCameraId = null;
             imageCount.set(0);
-            imageListView.getItems().clear();
+            imagesList.clear();
             stopListing.set(true);
+            textArea.getChildren().clear();
+
             if (!res.getElements().isEmpty()) {
               var ele = res.getElements().get(0);
-//                  ele.getAttributes().forEach((k,v) -> System.out.printf("ele: %s=%s\n", k, v));
-              natureCameraId = ele.getAttributes().get("GlobalId").toString();
-              executorService.execute(this::findImages);
-              textArea.setText(String.format("%s\n%s\n%s",
-                  ele.getAttributes().get("CameraName"),
-                  ele.getAttributes().get("GlobalID"),
-                  ele.getAttributes().get("OBJECTID")));
+              var currentNatureCameraId = ele.getAttributes().get("GlobalId").toString();
+              executorService.execute(() -> findAndDisplayImages(currentNatureCameraId));
+
+              Text cameraName = new Text(ele.getAttributes().get("CameraName").toString());
+              cameraName.setFont(new Font(20));
+              cameraName.setUnderline(true);
+              cameraName.setTextAlignment(TextAlignment.CENTER);
+              textArea.getChildren().addAll(new Text("Camera name: "), cameraName, new Text("\n"));
+
+              Text globalId = new Text (ele.getAttributes().get("GlobalID").toString());
+              textArea.getChildren().addAll(new Text("Global id: "), globalId, new Text("\n"));
+
+              Text objectId = new Text (ele.getAttributes().get("ObjectId").toString());
+              textArea.getChildren().addAll(new Text("ObjectId: "), objectId, new Text("\n"));
             } else {
-              textArea.setText("No camera selected");
+              textArea.getChildren().add(noCamera);
             }
           } catch (InterruptedException | ExecutionException ex) {
             System.out.println(ex.getMessage());
@@ -190,27 +228,18 @@ public class NatureCameraViewerApp extends Application {
         }));
       }
     });
-
-
-    imageFeatureTable = new ServiceFeatureTable(imageTableURL);
-    imageFeatureTable.addDoneLoadingListener(() -> {
-      System.out.println("loaded image layer");
-      imageFeatureTable.getFields().forEach(f -> System.out.println("field: " + f.getName() + "=" + f.toJson()));
-    });
-    imageFeatureTable.loadAsync();
-
-
   }
 
-  void findImages() {
+  private void findAndDisplayImages(String currentNatureCameraId) {
+    if (currentNatureCameraId == null) {
+      return;
+    }
     stopListing.set(false);
-    var q = new QueryParameters();
-    System.out.println("Find imageListView for " + natureCameraId);
-    q.setWhereClause("NatureCameraID='{" + natureCameraId + "}'");
-//    q.setWhereClause("1=1");
-    var r = imageFeatureTable.queryFeaturesAsync(q);
+    listIsLoading.set(true);
+    var queryParameters = new QueryParameters();
+    queryParameters.setWhereClause("NatureCameraID='{" + currentNatureCameraId + "}'");
+    var r = imageFeatureTable.queryFeaturesAsync(queryParameters);
     try {
-      System.out.println("query returned");
       FeatureQueryResult res = r.get();
       var it = res.iterator();
       while (it.hasNext()) {
@@ -244,10 +273,10 @@ public class NatureCameraViewerApp extends Application {
                     imageCount.set(imageCount.get() + 1);
                     GregorianCalendar cal = (GregorianCalendar) f.getAttributes().get("ImageDate");
                     String date = imageDateFormat.format(cal.getTime());
-                    imageListView.getItems().add(new ImageRecord(date, imageFromStream));
+                    imagesList.add(new ImageRecord(date, imageFromStream));
                   });
                 } else {
-                  System.out.println("didn't fetch data for " + f.getAttributes().get("OBJECTID"));
+                  System.out.println("Couldn't fetch data for " + f.getAttributes().get("OBJECTID"));
                 }
               } catch (Exception exception) {
                 exception.printStackTrace();
@@ -264,6 +293,7 @@ public class NatureCameraViewerApp extends Application {
       System.out.println(e.getMessage());
       e.printStackTrace();
     }
+    listIsLoading.set(false);
   }
 
   /**
@@ -278,8 +308,10 @@ public class NatureCameraViewerApp extends Application {
   }
 
   static class ImageCellFactory implements Callback<ListView<ImageRecord>, ListCell<ImageRecord>> {
+
     @Override
     public ListCell<ImageRecord> call(ListView<ImageRecord> param) {
+
       return new ListCell<>(){
         @Override
         public void updateItem(ImageRecord imageRecord, boolean empty) {
@@ -290,11 +322,12 @@ public class NatureCameraViewerApp extends Application {
           } else {
             setText(imageRecord.dateString);
             var iv = new ImageView(imageRecord.imageData());
-            iv.setFitWidth(200);
+            iv.fitWidthProperty().bind(imageListView.widthProperty().subtract(35));
             iv.setPreserveRatio(true);
             setGraphic(iv);
             setContentDisplay(ContentDisplay.TOP);
           }
+          setStyle("-fx-border-color: gray; -fx-border-width: 1px; -fx-alignment: center; -fx-border-insets: 1px;");
         }
       };
     }
