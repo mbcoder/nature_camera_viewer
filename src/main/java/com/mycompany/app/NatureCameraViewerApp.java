@@ -20,9 +20,13 @@ import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Comparator;
 import java.util.GregorianCalendar;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -104,6 +108,8 @@ public class NatureCameraViewerApp extends Application {
   private final ObservableList<ImageRecord> imagesList = FXCollections.observableArrayList();
   private final BooleanProperty listIsLoading = new SimpleBooleanProperty();
 
+  private Future<?> currentListTask;
+
   // Allow the loading of the images and the populating of the title area to run on threads.
   private final ExecutorService executorService = Executors.newFixedThreadPool(2);
 
@@ -183,7 +189,7 @@ public class NatureCameraViewerApp extends Application {
 
         // identify possible camera feature on the feature layer
         identifyGraphics = mapView.identifyLayerAsync(featureLayer, mapViewPoint, 10, false);
-        identifyGraphics.addDoneListener(() -> executorService.execute(this::identifyAnySelectedCamera));
+        identifyGraphics.addDoneListener(this::prepareToIdentifyCamera);
       }
     });
   }
@@ -213,17 +219,44 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
+   * Stop any current list which is being generated.
+   */
+  private void stopAnyCurrentListing() {
+    if (currentListTask != null) {
+      stopListing.set(true);
+      try {
+        currentListTask.get(10, TimeUnit.SECONDS);
+      } catch (InterruptedException | ExecutionException | CancellationException | TimeoutException e) {
+        System.out.println(e.getMessage());
+      }
+      currentListTask = null;
+      stopListing.set(false);
+    }
+  }
+
+  /**
+   * Clear any existing selection and start identifying new selection.
+   */
+  private void prepareToIdentifyCamera() {
+    // Stop any current list of images being generated
+    stopAnyCurrentListing();
+
+    Platform.runLater(() -> {
+      // Clear text and list
+      imageCount.set(0);
+      imagesList.clear();
+      titleTextArea.getChildren().clear();
+      // Start new identify on separate thread
+      executorService.execute(this::identifyAnySelectedCamera);
+    });
+  }
+
+  /**
    * Identify if a camera has been selected and if it has, start loading images for the selected camera.
    */
   private void identifyAnySelectedCamera() {
     try {
       var res = identifyGraphics.get(15, TimeUnit.SECONDS);
-      Platform.runLater(() -> {
-        imageCount.set(0);
-        stopListing.set(true);
-        imagesList.clear();
-        titleTextArea.getChildren().clear();
-      });
 
       if (!res.getElements().isEmpty()) {
         // A camera has been selected. Set up the title area and start loading images.
@@ -231,7 +264,7 @@ public class NatureCameraViewerApp extends Application {
         var geoElement = res.getElements().get(0);
         var currentNatureCameraId = geoElement.getAttributes().get("GlobalId").toString();
         // Start loading images on separate thread.
-        executorService.execute(() -> findAndDisplayImages(currentNatureCameraId));
+        currentListTask =  executorService.submit(new GenerateImageListTask(currentNatureCameraId));
 
         // Set up the title area text.
         Text cameraName = new Text(geoElement.getAttributes().get("CameraName").toString());
@@ -253,81 +286,6 @@ public class NatureCameraViewerApp extends Application {
       System.out.println(ex.getMessage());
       ex.printStackTrace();
     }
-
-  }
-
-  /**
-   * Load and display all images for the given camera.
-   *
-   * @param currentNatureCameraId the id for the camera to load images for
-   */
-  private void findAndDisplayImages(String currentNatureCameraId) {
-    if (currentNatureCameraId == null) {
-      return;
-    }
-    stopListing.set(false);
-    listIsLoading.set(true);
-    var queryParameters = new QueryParameters();
-    queryParameters.setWhereClause("NatureCameraID='{" + currentNatureCameraId + "}'");
-    var r = imageFeatureTable.queryFeaturesAsync(queryParameters);
-    try {
-      FeatureQueryResult res = r.get(20, TimeUnit.SECONDS);
-      var it = res.iterator();
-      while (it.hasNext()) {
-        var rr = it.next();
-        if (stopListing.get()) {
-          System.out.println("stopped");
-          break;
-        }
-        ArcGISFeature f = (ArcGISFeature) rr;
-        try {
-          var attachmentList = f.fetchAttachmentsAsync().get();
-          if (!attachmentList.isEmpty()) {
-            var imageAttachment = attachmentList.get(0);
-            if (stopListing.get()) {
-              break;
-            }
-
-            ListenableFuture<InputStream> attachmentDataFuture = imageAttachment.fetchDataAsync();
-            // listen for fetch data to complete
-            attachmentDataFuture.addDoneListener(() -> {
-
-              // get the attachments data as an input stream
-              try {
-                if (stopListing.get()) {
-                  return;
-                }
-                if (imageAttachment.hasFetchedData() && !stopListing.get()) {
-                  InputStream attachmentInputStream = attachmentDataFuture.get(15, TimeUnit.SECONDS);
-                  // save the input stream to a temporary directory and get a reference to its URI
-                  Image imageFromStream = new Image(attachmentInputStream);
-                  attachmentInputStream.close();
-
-                  Platform.runLater(() -> {
-                    imageCount.set(imageCount.get() + 1);
-                    GregorianCalendar cal = (GregorianCalendar) f.getAttributes().get("ImageDate");
-                    String date = imageDateFormat.format(cal.getTime());
-                    imagesList.add(new ImageRecord(date, imageFromStream));
-                  });
-                } else {
-                  System.out.println("Couldn't fetch data for " + f.getAttributes().get("OBJECTID"));
-                }
-              } catch (Exception exception) {
-                exception.printStackTrace();
-                new Alert(Alert.AlertType.ERROR, "Error getting attachment").show();
-              }
-            });
-          }
-        } catch (InterruptedException | ExecutionException e) {
-          System.out.println(e.getMessage());
-          e.printStackTrace();
-        }
-      }
-    } catch (InterruptedException | ExecutionException | TimeoutException e) {
-      System.out.println(e.getMessage());
-      e.printStackTrace();
-    }
-    listIsLoading.set(false);
   }
 
   /**
@@ -336,7 +294,7 @@ public class NatureCameraViewerApp extends Application {
   @Override
   public void stop() {
     // Stop loading any list
-    stopListing.set(true);
+    stopAnyCurrentListing();
     // Stop threads
     executorService.shutdown();
     // Dispose map view
@@ -368,6 +326,7 @@ public class NatureCameraViewerApp extends Application {
             // Image on top, date underneath
             setContentDisplay(ContentDisplay.TOP);
           }
+          // Make it more obvious which image the date is associated with by adding a border round the cell
           setStyle("-fx-border-color: gray; -fx-border-width: 1px; -fx-alignment: center; -fx-border-insets: 1px;");
         }
       };
@@ -389,4 +348,100 @@ public class NatureCameraViewerApp extends Application {
     }
     return o1.dateString.compareTo(o2.dateString);
   };
+
+  /**
+   * Wrap the list construction in a task to be able to wait for it when we try to cancel.
+   */
+  private class GenerateImageListTask implements Callable<Void> {
+    private final String currentNatureCameraId;
+
+    public GenerateImageListTask(String currentId) {
+      currentNatureCameraId = currentId;
+    }
+
+    @Override
+    public Void call() throws Exception {
+      if (currentNatureCameraId == null) {
+        return null;
+      }
+      listIsLoading.set(true);
+      // Query the table for features with this camera's id
+      var queryParameters = new QueryParameters();
+      queryParameters.setWhereClause("NatureCameraID='{" + currentNatureCameraId + "}'");
+      var r = imageFeatureTable.queryFeaturesAsync(queryParameters);
+      try {
+        FeatureQueryResult res = r.get(20, TimeUnit.SECONDS);
+        var it = res.iterator();
+        while (it.hasNext()) {
+          var rr = it.next();
+          if (stopListing.get()) {
+            listIsLoading.set(false);
+            return null;
+          }
+          ArcGISFeature f = (ArcGISFeature) rr;
+          try {
+            var attachmentList = f.fetchAttachmentsAsync().get();
+            if (!attachmentList.isEmpty()) {
+              var imageAttachment = attachmentList.get(0);
+              if (stopListing.get()) {
+                listIsLoading.set(false);
+                return null;
+              }
+
+              ListenableFuture<InputStream> attachmentDataFuture = imageAttachment.fetchDataAsync();
+              CountDownLatch latch = new CountDownLatch(1);
+              // listen for fetch data to complete
+              attachmentDataFuture.addDoneListener(() -> {
+
+                // get the attachments data as an input stream
+                try {
+                  if (stopListing.get()) {
+                    latch.countDown();
+                    return;
+                  }
+                  if (imageAttachment.hasFetchedData() && !stopListing.get()) {
+                    InputStream attachmentInputStream = attachmentDataFuture.get(15, TimeUnit.SECONDS);
+                    // save the input stream to a temporary directory and get a reference to its URI
+                    Image imageFromStream = new Image(attachmentInputStream);
+                    attachmentInputStream.close();
+
+                    if (stopListing.get()) {
+                      latch.countDown();
+                      return;
+                    }
+
+                    Platform.runLater(() -> {
+                      imageCount.set(imageCount.get() + 1);
+                      GregorianCalendar cal = (GregorianCalendar) f.getAttributes().get("ImageDate");
+                      String date = imageDateFormat.format(cal.getTime());
+                      imagesList.add(new ImageRecord(date, imageFromStream));
+                      latch.countDown();
+                    });
+                  } else {
+                    System.out.println("Couldn't fetch data for " + f.getAttributes().get("OBJECTID"));
+                  }
+                } catch (Exception exception) {
+                  System.out.println(exception.getMessage());
+                  exception.printStackTrace();
+                }
+              });
+              latch.await(10, TimeUnit.SECONDS);
+            }
+          } catch (InterruptedException | ExecutionException e) {
+            System.out.println(e.getMessage());
+            e.printStackTrace();
+            return null;
+          }
+        }
+      } catch (InterruptedException | ExecutionException | TimeoutException e) {
+        System.out.println(e.getMessage());
+        e.printStackTrace();
+        return null;
+      }
+      listIsLoading.set(false);
+      System.out.println("stopped listing");
+
+      return null;
+    }
+  }
 }
