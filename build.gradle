@@ -56,7 +56,7 @@ javafx {
 
 application {
     mainModule = "com.mycompany.app"
-    mainClass = "com.mycompany.app.App"
+    mainClass = "com.mycompany.app.NatureCameraViewerApp"
 }
 
 task copyNatives(type: Copy) {

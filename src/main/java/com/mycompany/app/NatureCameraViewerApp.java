@@ -82,42 +82,41 @@ import javafx.util.Callback;
  */
 public class NatureCameraViewerApp extends Application {
 
-  // A record to hold the data used in the list view cells
+  // A record type to hold the data used in the list view cells
   private record ImageRecord(String dateString, Image imageData) {
   }
 
   private static final String serviceTableURL = "https://services1.arcgis.com/6677msI40mnLuuLr/ArcGIS/rest/services/NatureCamera/FeatureServer/0";
   private static final String imageTableURL = "https://services1.arcgis.com/6677msI40mnLuuLr/ArcGIS/rest/services/NatureCamera/FeatureServer/1";
+
+  // Some static text for use in the title area
+  private static final Text noCamera = new Text("No camera selected");
+  private static final Text cameraLabel = new Text("Camera name: ");
+  private static final Text globalIdLabel = new Text("Global id: ");
+  private static final Text objectIdLabel = new Text("ObjectId: ");
+  // The date string is used to sort the list, so if the formatting is modified might need to change sorting
+  private static final SimpleDateFormat imageDateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss.sss");
+
   private ServiceFeatureTable cameraLocationFeatureTable;
   private ServiceFeatureTable imageFeatureTable;
 
   private MapView mapView;
   private ArcGISMap map;
+
   private final TextFlow titleTextArea = new TextFlow();
     // Display a count of images loaded
   private final TextField imageCountText = new TextField();
 
   private ListenableFuture<IdentifyLayerResult> identifyGraphics;
   private GenerateImageListTask generateImageListTask;
-
   private final IntegerProperty imageCount = new SimpleIntegerProperty(0);
-  private static final ListView<ImageRecord> imageListView = new ListView<>();
+  private final ListView<ImageRecord> imageListView = new ListView<>();
   private final ObservableList<ImageRecord> imagesList = FXCollections.observableArrayList();
   private final BooleanProperty listIsLoading = new SimpleBooleanProperty();
-
   private Future<?> currentListTask;
 
   // Allow the loading of the images and the populating of the title area to run on threads.
   private final ExecutorService executorService = Executors.newFixedThreadPool(2);
-
-  // The date string is used to sort the list, so if the formatting is modified might need to change sorting
-  private static final SimpleDateFormat imageDateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss.sss");
-
-  // Some static text for use in the title area
-  private static final Text noCamera = new Text("No camera selected");
-  public static final Text cameraLabel = new Text("Camera name: ");
-  public static final Text globalIdLabel = new Text("Global id: ");
-  public static final Text objectIdLabel = new Text("ObjectId: ");
 
   /**
    * Entry point for app which launches a JavaFX app instance.
@@ -138,8 +137,7 @@ public class NatureCameraViewerApp extends Application {
   @Override
   public void start(Stage stage) {
 
-    ArcGISRuntimeEnvironment.setApiKey(
-        "AAPK2967d54657e342d398c129c8581b516686jXNGXVc6CFPZVRVIFV6YbjpO_fn7fz4S2ECOR2nkZkZXxyfl51Iy8AS6h3qcXV");
+    ArcGISRuntimeEnvironment.setApiKey(System.getenv("API_KEY"));
 
     // set the title and size of the stage and show it
     stage.setTitle("Nature camera image viewer");
@@ -192,7 +190,21 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
-   * A box with a title text area, a text area for the number of images, and a list of images
+   * Stops and releases all resources used in application.
+   */
+  @Override
+  public void stop() {
+    // Stop loading any list
+    stopAnyCurrentListing();
+    // Stop threads
+    executorService.shutdown();
+    // Dispose map view
+    mapView.dispose();
+  }
+
+  /**
+   * A box with a title text area, a text area for the number of images, and a list of images.
+   *
    * @return a VBox
    */
   private Region constructRightHandBox() {
@@ -210,7 +222,7 @@ public class NatureCameraViewerApp extends Application {
     imageCountText.textProperty().bind(
         Bindings.concat("Image count: ",
             imageCount.asString(),
-            Bindings.when(listIsLoading).then("   (List is loading)").otherwise("")));
+            Bindings.when(listIsLoading).then("   [List is loading]").otherwise("")));
     imageCount.set(0);
     return rightHandBox;
   }
@@ -256,12 +268,12 @@ public class NatureCameraViewerApp extends Application {
    */
   private void identifyAnySelectedCamera() {
     try {
-      var res = identifyGraphics.get(15, TimeUnit.SECONDS);
+      var identifyLayerResult = identifyGraphics.get(15, TimeUnit.SECONDS);
 
-      if (!res.getElements().isEmpty()) {
+      if (!identifyLayerResult.getElements().isEmpty()) {
         // A camera has been selected. Set up the title area and start loading images.
         // If multiple cameras are found we just load for the first in the list.
-        var geoElement = res.getElements().get(0);
+        var geoElement = identifyLayerResult.getElements().get(0);
         var currentNatureCameraId = geoElement.getAttributes().get("GlobalId").toString();
         // Start loading images on separate thread.
         generateImageListTask = new GenerateImageListTask(currentNatureCameraId);
@@ -286,51 +298,6 @@ public class NatureCameraViewerApp extends Application {
     } catch (InterruptedException | ExecutionException | TimeoutException ex) {
       System.out.println(ex.getMessage());
       ex.printStackTrace();
-    }
-  }
-
-  /**
-   * Stops and releases all resources used in application.
-   */
-  @Override
-  public void stop() {
-    // Stop loading any list
-    stopAnyCurrentListing();
-    // Stop threads
-    executorService.shutdown();
-    // Dispose map view
-    mapView.dispose();
-  }
-
-  /**
-   * A cell factory to display an ImageRecord in a list.
-   */
-  private static class ImageCellFactory implements Callback<ListView<ImageRecord>, ListCell<ImageRecord>> {
-
-    @Override
-    public ListCell<ImageRecord> call(ListView<ImageRecord> param) {
-
-      return new ListCell<>() {
-        @Override
-        public void updateItem(ImageRecord imageRecord, boolean empty) {
-          super.updateItem(imageRecord, empty);
-          if (empty || imageRecord == null) {
-            setText(null);
-            setGraphic(null);
-          } else {
-            setText(imageRecord.dateString);
-            var imageView = new ImageView(imageRecord.imageData());
-            // Want the image to almost fill the list width and to automatically adjust when list width changes
-            imageView.fitWidthProperty().bind(imageListView.widthProperty().subtract(35));
-            imageView.setPreserveRatio(true);
-            setGraphic(imageView);
-            // Image on top, date underneath
-            setContentDisplay(ContentDisplay.TOP);
-          }
-          // Make it more obvious which image the date is associated with by adding a border round the cell
-          setStyle("-fx-border-color: gray; -fx-border-width: 1px; -fx-alignment: center; -fx-border-insets: 1px;");
-        }
-      };
     }
   }
 
@@ -386,9 +353,9 @@ public class NatureCameraViewerApp extends Application {
           if (stopLoading.get()) {
             return null;
           }
-          ArcGISFeature f = (ArcGISFeature) feature;
+          ArcGISFeature arcGISFeature = (ArcGISFeature) feature;
 
-          var attachmentList = f.fetchAttachmentsAsync().get(10, TimeUnit.SECONDS);
+          var attachmentList = arcGISFeature.fetchAttachmentsAsync().get(10, TimeUnit.SECONDS);
           if (!attachmentList.isEmpty()) {
             // Assume we always want just the first attachment
             var imageAttachment = attachmentList.get(0);
@@ -411,20 +378,16 @@ public class NatureCameraViewerApp extends Application {
                   Image imageFromStream = new Image(attachmentInputStream);
                   attachmentInputStream.close();
 
-                  if (stopLoading.get()) {
-                    return;
-                  }
-
                   Platform.runLater(() -> {
                     if (!stopLoading.get()) {
                       imageCount.set(imageCount.get() + 1);
-                      GregorianCalendar cal = (GregorianCalendar) f.getAttributes().get("ImageDate");
+                      GregorianCalendar cal = (GregorianCalendar) arcGISFeature.getAttributes().get("ImageDate");
                       String date = imageDateFormat.format(cal.getTime());
                       imagesList.add(new ImageRecord(date, imageFromStream));
                     }
                   });
                 } else {
-                  System.out.println("Couldn'generateImageListTask fetch data for " + f.getAttributes().get("OBJECTID"));
+                  System.out.println("Couldn't fetch data for " + arcGISFeature.getAttributes().get("OBJECTID"));
                 }
               } catch (Exception exception) {
                 System.out.println(exception.getMessage());
@@ -442,6 +405,38 @@ public class NatureCameraViewerApp extends Application {
       System.out.println("stopped listing");
 
       return null;
+    }
+  }
+
+  /**
+   * A cell factory to display an ImageRecord in a list.
+   */
+  private class ImageCellFactory implements Callback<ListView<ImageRecord>, ListCell<ImageRecord>> {
+
+    @Override
+    public ListCell<ImageRecord> call(ListView<ImageRecord> param) {
+
+      return new ListCell<>() {
+        @Override
+        public void updateItem(ImageRecord imageRecord, boolean empty) {
+          super.updateItem(imageRecord, empty);
+          if (empty || imageRecord == null) {
+            setText(null);
+            setGraphic(null);
+          } else {
+            setText(imageRecord.dateString);
+            var imageView = new ImageView(imageRecord.imageData());
+            // Want the image to almost fill the list width and to automatically adjust when list width changes
+            imageView.fitWidthProperty().bind(imageListView.widthProperty().subtract(35));
+            imageView.setPreserveRatio(true);
+            setGraphic(imageView);
+            // Image on top, date underneath
+            setContentDisplay(ContentDisplay.TOP);
+          }
+          // Make it more obvious which image the date is associated with by adding a border round the cell
+          setStyle("-fx-border-color: gray; -fx-border-width: 1px; -fx-alignment: center; -fx-border-insets: 1px;");
+        }
+      };
     }
   }
 }
