@@ -22,7 +22,6 @@ import java.util.Comparator;
 import java.util.GregorianCalendar;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -99,10 +98,8 @@ public class NatureCameraViewerApp extends Application {
   private final TextField imageCountText = new TextField();
 
   private ListenableFuture<IdentifyLayerResult> identifyGraphics;
+  private GenerateImageListTask generateImageListTask;
 
-  // Manage a list of loaded images
-  // Allow the thread loading the images to be told to bail out
-  private final AtomicBoolean stopListing = new AtomicBoolean();
   private final IntegerProperty imageCount = new SimpleIntegerProperty(0);
   private static final ListView<ImageRecord> imageListView = new ListView<>();
   private final ObservableList<ImageRecord> imagesList = FXCollections.observableArrayList();
@@ -219,18 +216,21 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
-   * Stop any current list which is being generated.
+   * Stop any current list which is being generated. This signals stop to any current task and waits for it to complete
+   * otherwise we can have two tasks populating the list.
    */
   private void stopAnyCurrentListing() {
+    if (generateImageListTask != null) {
+      generateImageListTask.stopListingImages();
+      generateImageListTask = null;
+    }
     if (currentListTask != null) {
-      stopListing.set(true);
       try {
         currentListTask.get(10, TimeUnit.SECONDS);
       } catch (InterruptedException | ExecutionException | CancellationException | TimeoutException e) {
         System.out.println(e.getMessage());
       }
       currentListTask = null;
-      stopListing.set(false);
     }
   }
 
@@ -264,7 +264,8 @@ public class NatureCameraViewerApp extends Application {
         var geoElement = res.getElements().get(0);
         var currentNatureCameraId = geoElement.getAttributes().get("GlobalId").toString();
         // Start loading images on separate thread.
-        currentListTask =  executorService.submit(new GenerateImageListTask(currentNatureCameraId));
+        generateImageListTask = new GenerateImageListTask(currentNatureCameraId);
+        currentListTask =  executorService.submit(generateImageListTask);
 
         // Set up the title area text.
         Text cameraName = new Text(geoElement.getAttributes().get("CameraName").toString());
@@ -353,10 +354,20 @@ public class NatureCameraViewerApp extends Application {
    * Wrap the list construction in a task to be able to wait for it when we try to cancel.
    */
   private class GenerateImageListTask implements Callable<Void> {
+    private final AtomicBoolean stopLoading = new AtomicBoolean();
+
     private final String currentNatureCameraId;
 
     public GenerateImageListTask(String currentId) {
       currentNatureCameraId = currentId;
+    }
+
+    /**
+     * Stop the current listing.
+     */
+    void stopListingImages() {
+      listIsLoading.set(false);
+      stopLoading.set(true);
     }
 
     @Override
@@ -368,67 +379,58 @@ public class NatureCameraViewerApp extends Application {
       // Query the table for features with this camera's id
       var queryParameters = new QueryParameters();
       queryParameters.setWhereClause("NatureCameraID='{" + currentNatureCameraId + "}'");
-      var r = imageFeatureTable.queryFeaturesAsync(queryParameters);
+      var featureQueryResultFuture = imageFeatureTable.queryFeaturesAsync(queryParameters);
       try {
-        FeatureQueryResult res = r.get(20, TimeUnit.SECONDS);
-        for (Feature feature : res) {
-          if (stopListing.get()) {
-            listIsLoading.set(false);
+        FeatureQueryResult featureQueryResult = featureQueryResultFuture.get(20, TimeUnit.SECONDS);
+        for (Feature feature : featureQueryResult) {
+          if (stopLoading.get()) {
             return null;
           }
           ArcGISFeature f = (ArcGISFeature) feature;
-          try {
-            var attachmentList = f.fetchAttachmentsAsync().get();
-            if (!attachmentList.isEmpty()) {
-              var imageAttachment = attachmentList.get(0);
-              if (stopListing.get()) {
-                listIsLoading.set(false);
-                return null;
-              }
 
-              ListenableFuture<InputStream> attachmentDataFuture = imageAttachment.fetchDataAsync();
-              CountDownLatch latch = new CountDownLatch(1);
-              // listen for fetch data to complete
-              attachmentDataFuture.addDoneListener(() -> {
+          var attachmentList = f.fetchAttachmentsAsync().get(10, TimeUnit.SECONDS);
+          if (!attachmentList.isEmpty()) {
+            // Assume we always want just the first attachment
+            var imageAttachment = attachmentList.get(0);
+            if (stopLoading.get()) {
+              return null;
+            }
 
-                // get the attachments data as an input stream
-                try {
-                  if (stopListing.get()) {
-                    latch.countDown();
+            ListenableFuture<InputStream> attachmentDataFuture = imageAttachment.fetchDataAsync();
+            // listen for fetch data to complete
+            attachmentDataFuture.addDoneListener(() -> {
+
+              // get the attachments data as an input stream
+              try {
+                if (stopLoading.get()) {
+                  return;
+                }
+                if (imageAttachment.hasFetchedData() && !stopLoading.get()) {
+                  InputStream attachmentInputStream = attachmentDataFuture.get(15, TimeUnit.SECONDS);
+                  // save the input stream to a temporary directory and get a reference to its URI
+                  Image imageFromStream = new Image(attachmentInputStream);
+                  attachmentInputStream.close();
+
+                  if (stopLoading.get()) {
                     return;
                   }
-                  if (imageAttachment.hasFetchedData() && !stopListing.get()) {
-                    InputStream attachmentInputStream = attachmentDataFuture.get(15, TimeUnit.SECONDS);
-                    // save the input stream to a temporary directory and get a reference to its URI
-                    Image imageFromStream = new Image(attachmentInputStream);
-                    attachmentInputStream.close();
 
-                    if (stopListing.get()) {
-                      latch.countDown();
-                      return;
-                    }
-
-                    Platform.runLater(() -> {
+                  Platform.runLater(() -> {
+                    if (!stopLoading.get()) {
                       imageCount.set(imageCount.get() + 1);
                       GregorianCalendar cal = (GregorianCalendar) f.getAttributes().get("ImageDate");
                       String date = imageDateFormat.format(cal.getTime());
                       imagesList.add(new ImageRecord(date, imageFromStream));
-                      latch.countDown();
-                    });
-                  } else {
-                    System.out.println("Couldn't fetch data for " + f.getAttributes().get("OBJECTID"));
-                  }
-                } catch (Exception exception) {
-                  System.out.println(exception.getMessage());
-                  exception.printStackTrace();
+                    }
+                  });
+                } else {
+                  System.out.println("Couldn'generateImageListTask fetch data for " + f.getAttributes().get("OBJECTID"));
                 }
-              });
-              latch.await(10, TimeUnit.SECONDS);
-            }
-          } catch (InterruptedException | ExecutionException e) {
-            System.out.println(e.getMessage());
-            e.printStackTrace();
-            return null;
+              } catch (Exception exception) {
+                System.out.println(exception.getMessage());
+                exception.printStackTrace();
+              }
+            });
           }
         }
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
