@@ -103,7 +103,7 @@ public class NatureCameraViewerApp extends Application {
   // Manage a list of loaded images
   // Allow the thread loading the images to be told to bail out
   private final AtomicBoolean stopListing = new AtomicBoolean();
-  private final IntegerProperty imageCount = new SimpleIntegerProperty();
+  private final IntegerProperty imageCount = new SimpleIntegerProperty(0);
   private static final ListView<ImageRecord> imageListView = new ListView<>();
   private final ObservableList<ImageRecord> imagesList = FXCollections.observableArrayList();
   private final BooleanProperty listIsLoading = new SimpleBooleanProperty();
