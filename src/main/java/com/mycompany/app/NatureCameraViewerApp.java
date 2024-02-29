@@ -203,6 +203,25 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
+   * Stop any current list which is being generated. This signals stop to any current task and waits for it to complete
+   * otherwise we can have two tasks populating the list.
+   */
+  private void stopAnyCurrentListing() {
+    if (generateImageListTask != null) {
+      generateImageListTask.stopListingImages();
+      generateImageListTask = null;
+    }
+    if (currentListTask != null) {
+      try {
+        currentListTask.get(10, TimeUnit.SECONDS);
+      } catch (InterruptedException | ExecutionException | CancellationException | TimeoutException e) {
+        System.out.println(e.getMessage());
+      }
+      currentListTask = null;
+    }
+  }
+
+  /**
    * A box with a title text area, a text area for the number of images, and a list of images.
    *
    * @return a VBox
@@ -228,25 +247,6 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
-   * Stop any current list which is being generated. This signals stop to any current task and waits for it to complete
-   * otherwise we can have two tasks populating the list.
-   */
-  private void stopAnyCurrentListing() {
-    if (generateImageListTask != null) {
-      generateImageListTask.stopListingImages();
-      generateImageListTask = null;
-    }
-    if (currentListTask != null) {
-      try {
-        currentListTask.get(10, TimeUnit.SECONDS);
-      } catch (InterruptedException | ExecutionException | CancellationException | TimeoutException e) {
-        System.out.println(e.getMessage());
-      }
-      currentListTask = null;
-    }
-  }
-
-  /**
    * Clear any existing selection and start identifying new selection.
    */
   private void prepareToIdentifyCamera() {
@@ -264,7 +264,8 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
-   * Identify if a camera has been selected and if it has, start loading images for the selected camera.
+   * Identify if a camera location has been selected and if it has, update the info box and start loading images
+   * for the selected camera.
    */
   private void identifyAnySelectedCamera() {
     try {
@@ -293,6 +294,7 @@ public class NatureCameraViewerApp extends Application {
             globalIdLabel, globalId, new Text("\n"),
             objectIdLabel, objectId, new Text("\n")));
       } else {
+        // Set the ingo box back to saying no camera selected
         Platform.runLater(() -> titleTextArea.getChildren().add(noCamera));
       }
     } catch (InterruptedException | ExecutionException | TimeoutException ex) {
@@ -318,7 +320,7 @@ public class NatureCameraViewerApp extends Application {
   };
 
   /**
-   * Wrap the list construction in a task to be able to wait for it when we try to cancel.
+   * Wrap the image list construction in a task.
    */
   private class GenerateImageListTask implements Callable<Void> {
     private final AtomicBoolean stopLoading = new AtomicBoolean();
@@ -330,7 +332,7 @@ public class NatureCameraViewerApp extends Application {
     }
 
     /**
-     * Stop the current listing.
+     * Stop loading the current listing.
      */
     void stopListingImages() {
       listIsLoading.set(false);
@@ -409,7 +411,7 @@ public class NatureCameraViewerApp extends Application {
   }
 
   /**
-   * A cell factory to display an ImageRecord in a list.
+   * A cell factory to display an ImageRecord in a list cell. Displays the image with the date text underneath.
    */
   private class ImageCellFactory implements Callback<ListView<ImageRecord>, ListCell<ImageRecord>> {
 
